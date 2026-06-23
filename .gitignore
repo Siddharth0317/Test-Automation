@@ -5,3 +5,4 @@ data/*.json
 reports/*.png
 reports/*.pdf
 .env
+config\settings.py
