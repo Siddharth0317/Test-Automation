@@ -1,9 +1,25 @@
-from google import genai
+import time
 import json
 import re
+from google import genai
 from config.settings import GEMINI_API_KEY
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+# -------- CACHE --------
+cache = {}
+
+# -------- RATE LIMIT CONTROL --------
+LAST_CALL = 0
+
+def wait_if_needed():
+    global LAST_CALL
+    now = time.time()
+
+    if now - LAST_CALL < 10:
+        time.sleep(10)
+
+    LAST_CALL = time.time()
 
 
 # -------- CLEAN JSON --------
@@ -12,38 +28,67 @@ def clean_json(text):
     return match.group(0) if match else "[]"
 
 
-# -------- VALIDATE STRUCTURE --------
-def normalize_testcases(testcases):
-    fixed = []
+# -------- OFFLINE GENERATOR --------
+def offline_generator(user_story):
+    story = user_story.lower()
 
-    for i, test in enumerate(testcases):
-        fixed_test = {
-            "test_name": test.get("test_name", f"Test {i+1}"),
-            "type": test.get("type", "ui"),
-            "steps": []
-        }
-
-        for step in test.get("steps", []):
-            fixed_step = {
-                "action": step.get("action", "open"),
-                "value": step.get("value", ""),
+    # LOGIN
+    if "login" in story:
+        return [
+            {
+                "test_name": "Login Test",
+                "type": "ui",
+                "steps": [
+                    {"action": "open", "value": "/"},
+                    {"action": "type", "selector": "input[name='username']", "value": "user"},
+                    {"action": "type", "selector": "input[name='password']", "value": "pass"},
+                    {"action": "click", "selector": "button[type='submit']"}
+                ]
             }
+        ]
 
-            if "locator" in step:
-                fixed_step["locator"] = step["locator"]
+    # SEARCH
+    if "search" in story:
+        return [
+            {
+                "test_name": "Search Test",
+                "type": "ui",
+                "steps": [
+                    {"action": "open", "value": "/"},
+                    {"action": "type", "selector": "input[type='text']", "value": "product"},
+                    {"action": "click", "selector": "button[type='submit']"}
+                ]
+            }
+        ]
 
-            if "selector" in step:
-                fixed_step["selector"] = step["selector"]
+    # DEFAULT
+    return [
+        {
+            "test_name": "Basic Test",
+            "type": "ui",
+            "steps": [
+                {"action": "open", "value": "/"}
+            ]
+        }
+    ]
 
-            fixed_test["steps"].append(fixed_step)
 
-        fixed.append(fixed_test)
+# -------- GEMINI CALL --------
+def call_gemini(prompt, model):
+    return client.models.generate_content(
+        model=model,
+        contents=prompt
+    )
 
-    return fixed
 
-
-# -------- MAIN GENERATOR --------
+# -------- MAIN FUNCTION --------
 def generate_testcases(user_story):
+
+    # -------- CACHE CHECK --------
+    if user_story in cache:
+        print("✅ Using cached result")
+        return cache[user_story]
+
     prompt = f"""
     Generate Selenium test cases in STRICT JSON.
 
@@ -83,16 +128,37 @@ def generate_testcases(user_story):
     {user_story}
     """
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    models = [
+        "gemini-2.5-flash"
+    ]
 
-    text = response.text.strip()
+    # -------- GEMINI WITH RETRY --------
+    for model in models:
+        for attempt in range(2):
+            try:
+                wait_if_needed()
 
-    try:
-        parsed = json.loads(text)
-    except:
-        parsed = json.loads(clean_json(text))
+                print(f"Trying {model}, attempt {attempt+1}")
 
-    return normalize_testcases(parsed)
+                response = call_gemini(prompt, model)
+
+                text = response.text.strip()
+
+                try:
+                    result = json.loads(text)
+                except:
+                    result = json.loads(clean_json(text))
+
+                cache[user_story] = result
+                return result
+
+            except Exception as e:
+                print("⚠️ Retry:", e)
+                time.sleep(2)
+
+    # -------- FALLBACK --------
+    print("⚠️ Using offline generator")
+
+    result = offline_generator(user_story)
+    cache[user_story] = result
+    return result

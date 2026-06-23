@@ -1,48 +1,49 @@
 from core.driver import get_driver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
 
 
-# -------- HELPER: NORMALIZE ACTION --------
+# -------- NORMALIZE ACTION --------
 def normalize_action(action):
     mapping = {
         "open": "open",
         "open_url": "open",
-
         "type": "type",
         "enter_text": "type",
-        "input": "type",
-
         "click": "click",
         "click_element": "click",
-
-        "assert_title": "assert_title",
-        "assert_url_contains": "assert_title"
+        "assert_title": "assert_title"
     }
     return mapping.get(action, action)
 
 
-# -------- HELPER: FIND ELEMENT --------
-def find_element(driver, step):
-    # 1. locator (id=username)
+# -------- FIND ELEMENT WITH WAIT --------
+def find_element(driver, step, timeout=10):
+    wait = WebDriverWait(driver, timeout)
+
+    # locator (id=username)
     if "locator" in step:
-        try:
-            by, value = step["locator"].split("=")
-            return driver.find_element(getattr(By, by.upper()), value)
-        except:
-            pass
+        by, value = step["locator"].split("=")
+        return wait.until(
+            EC.presence_of_element_located((getattr(By, by.upper()), value))
+        )
 
-    # 2. selector (CSS)
+    # selector (CSS)
     if "selector" in step:
-        return driver.find_element(By.CSS_SELECTOR, step["selector"])
+        return wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, step["selector"]))
+        )
 
-    # 3. fallback using text
+    # fallback (text)
     if "value" in step:
         keyword = step["value"]
-        try:
-            return driver.find_element(By.XPATH, f"//*[contains(text(),'{keyword}')]")
-        except:
-            pass
+        return wait.until(
+            EC.presence_of_element_located(
+                (By.XPATH, f"//*[contains(text(),'{keyword}')]")
+            )
+        )
 
     raise Exception("Element not found")
 
@@ -50,8 +51,9 @@ def find_element(driver, step):
 # -------- MAIN EXECUTOR --------
 def execute_ui_test(test_case, base_url=""):
     driver = get_driver()
+    wait = WebDriverWait(driver, 10)
 
-    print(f"\n🚀 Running UI Test: {test_case.get('test_name', 'Unnamed Test')}")
+    print(f"\n🚀 Running: {test_case.get('test_name','Test')}")
 
     try:
         for step in test_case.get("steps", []):
@@ -63,48 +65,51 @@ def execute_ui_test(test_case, base_url=""):
             if action == "open":
                 url = step.get("value", "")
 
-                if not url:
-                    raise Exception("Missing URL")
-
-                if not url.startswith("http"):
-                    url = base_url + url
+                if base_url:
+                    if url.startswith("http"):
+                        url = base_url
+                    else:
+                        url = base_url + url
 
                 driver.get(url)
-                time.sleep(2)
+
+                # wait page load
+                wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
 
             # ---------- TYPE ----------
             elif action == "type":
                 element = find_element(driver, step)
 
-                text = step.get("value", "")
-                element.clear()
-                element.send_keys(text)
+                driver.execute_script("arguments[0].scrollIntoView();", element)
 
-                time.sleep(1)
+                element.clear()
+                element.send_keys(step.get("value", ""))
 
             # ---------- CLICK ----------
             elif action == "click":
                 element = find_element(driver, step)
+
+                driver.execute_script("arguments[0].scrollIntoView();", element)
+
+                wait.until(EC.element_to_be_clickable(element))
                 element.click()
-                time.sleep(2)
 
             # ---------- ASSERT ----------
             elif action == "assert_title":
                 expected = step.get("value", "")
-                if expected not in driver.title:
-                    raise Exception(f"Assertion failed: {driver.title}")
+                wait.until(lambda d: expected in d.title)
 
             # ---------- WAIT ----------
             elif action == "wait":
                 time.sleep(step.get("value", 2))
 
             else:
-                print(f"⚠️ Unknown action skipped: {action}")
+                print(f"⚠️ Unknown action: {action}")
 
-        print("✅ UI Test Passed")
+        print("✅ Test Passed")
 
     except Exception as e:
-        print("❌ UI Test Failed:", str(e))
+        print("❌ Test Failed:", str(e))
         raise e
 
     finally:
